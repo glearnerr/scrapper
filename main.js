@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const https = require("https");
 
 const ProductSchema = require("./models/Products");
+const EmbeddingSchema = require("./models/Embedding");
 const config = require("./config");
 
 let cachedDb = null;
@@ -12,6 +13,59 @@ const connectToDatabase = () => {
     return Promise.resolve(cachedDb);
   }
   return mongoose.connect(config.database, { useNewUrlParser: true });
+};
+
+//instance of axios for non-ssl connection or self signed ssl
+const instance = axios.create({
+  httpsAgent: new https.Agent({
+    rejectUnauthorized: false
+  })
+});
+
+//function returning promise
+const getEmbedding = data => {
+  return instance.post(config.embeddingUrl, { url: data.imgUrl });
+};
+
+//function handling promises with async await
+const embeddingHandler = async objectArr => {
+  const promises = objectArr.map(async obj => {
+    if (obj.imgUrl) {
+      let { tcin, imgUrl } = obj;
+      const resultPromise = await getEmbedding(obj)
+        .then(r => {
+          let embedding = r.data.embedding;
+          if (embedding) return { tcin, imgUrl, embedding };
+          else return;
+        })
+        .catch(e => {
+          console.log(e);
+        });
+
+      return resultPromise;
+    }
+  });
+
+  const resultedArr = await Promise.all(promises);
+
+  console.log("=======Dowloaded Embedding Data======");
+
+  let bulk = EmbeddingSchema.collection.initializeUnorderedBulkOp();
+
+  console.log("=======Updating Database======");
+
+  resultedArr.map(data => {
+    if (data) {
+      bulk
+        .find({ tcin: data.tcin })
+        .upsert()
+        .updateOne({ ...data });
+    }
+  });
+  //bulk data saving in mongodb
+  bulk.execute();
+  console.log("=======Embedding Database Updated======");
+  callMain();
 };
 
 //global variables
@@ -49,6 +103,9 @@ const callMain = () => {
         //bulk data saving in mongodb
         bulk.execute();
         console.log("=======Product Database Updated======");
+        //calling embedding function
+        console.log("=======Downloading Embedding Data======");
+        embeddingHandler([...objectArr]);
       } else {
         console.log("=======Done======");
       }
